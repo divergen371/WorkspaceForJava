@@ -24,7 +24,7 @@ The `JAVA PROJECTS` view allows you to manage your dependencies. More details ca
 1. 1億行のテキストファイル生成
 2. 数値データのソートと処理
 3. JSONファイルへの出力
-   - テキストファイルから読み取った値をIDとし、IDに紐づくユニークな値を生成を生成
+   - テキストファイルから読み取った値をIDとし、IDに紐づくユニークな値を生成
 
 ``` Java
  {

@@ -8,7 +8,7 @@ import java.text.NumberFormat;
 import java.util.Locale;
 
 public class FileGenerate {
-    public static void genarateFile() {
+    public static void generateFile() {
         // 出力ファイルの設定
         File outputFile = new File("file.txt");
 

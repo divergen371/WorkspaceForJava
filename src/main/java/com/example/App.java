@@ -250,7 +250,7 @@ public class App {
         long startTime = System.currentTimeMillis();
 
         if (!app.isFileComplete()) {
-            FileGenerate.genarateFile();
+            FileGenerate.generateFile();
         }
         app.processFile();
 

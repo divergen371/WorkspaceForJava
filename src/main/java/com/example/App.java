@@ -1,13 +1,10 @@
 package com.example;
 
 import java.io.BufferedReader;
-import java.io.BufferedWriter;
 import java.io.FileReader;
-import java.io.FileWriter;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.*;
@@ -30,8 +27,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 public class App {
     private static final List<AutoCloseable> resources = new ArrayList<>();
     private static final int BUFFER_SIZE = 1024 * 1024; // 1MB buffer
-    private static final int THREAD_COUNT = Runtime.getRuntime().availableProcessors();
-    private static final int CHUNK_SIZE = 1_000_000;
     private static final ObjectMapper objectMapper = new ObjectMapper();
 
     static {

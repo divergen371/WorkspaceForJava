@@ -63,7 +63,7 @@ public class App {
 
                     if (currentCount >= 10_000_000) {
                         String jsonFile = writeToJsonFile(sortedNumbers, currentFileIndex++);
-                        jsonFiles.add(jsonFile);  // JSONファイル名を記録
+                        jsonFiles.add(jsonFile); // JSONファイル名を記録
                         sortedNumbers.clear();
                         currentCount = 0;
                     }
@@ -72,7 +72,7 @@ public class App {
 
             if (!sortedNumbers.isEmpty()) {
                 String jsonFile = writeToJsonFile(sortedNumbers, currentFileIndex);
-                jsonFiles.add(jsonFile);  // 最後のJSONファイル名も記録
+                jsonFiles.add(jsonFile); // 最後のJSONファイル名も記録
             }
         }
 
@@ -154,11 +154,11 @@ public class App {
 
     private void compressFile(String jsonFileName) throws IOException {
         String xzFileName = jsonFileName + ".xz";
-        
+
         try (InputStream input = new FileInputStream(jsonFileName);
-             OutputStream output = new FileOutputStream(xzFileName);
-             XZOutputStream xzOut = new XZOutputStream(output, new LZMA2Options())) {
-            
+                OutputStream output = new FileOutputStream(xzFileName);
+                XZOutputStream xzOut = new XZOutputStream(output, new LZMA2Options())) {
+
             byte[] buffer = new byte[BUFFER_SIZE];
             int n;
             while ((n = input.read(buffer)) != -1) {
@@ -185,7 +185,7 @@ public class App {
             System.out.println("ファイルは既に生成済みです。");
             return;
         }
-        
+
         // 既存のファイルを削除して新規作成
         try {
             Files.deleteIfExists(Path.of("file.txt"));
@@ -249,25 +249,25 @@ public class App {
 
     public static void main(String[] args) throws Exception {
         App app = new App();
-        
+
         // 開始時刻を記録
         long startTime = System.currentTimeMillis();
-        
+
         if (!app.isFileComplete()) {
             app.generateFile();
         }
         app.processFile();
-        
+
         // 終了時刻を記録し、処理時間を計算
         long endTime = System.currentTimeMillis();
         long totalTime = endTime - startTime;
-        
+
         // 処理時間を分、秒、ミリ秒に変換
         long minutes = totalTime / (1000 * 60);
         long seconds = (totalTime % (1000 * 60)) / 1000;
         long milliseconds = totalTime % 1000;
-        
-        System.out.printf("総処理時間: %d分 %d秒 %dミリ秒%n", 
-            minutes, seconds, milliseconds);
+
+        System.out.printf("総処理時間: %d分 %d秒 %dミリ秒%n",
+                minutes, seconds, milliseconds);
     }
 }

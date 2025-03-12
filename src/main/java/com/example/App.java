@@ -6,11 +6,10 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.*;
 import java.io.File;
-import java.util.TreeSet;
-import java.util.Set;
 import java.util.UUID;
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.core.JsonEncoding;
@@ -43,30 +42,29 @@ public class App {
 
     public void processFile() throws IOException {
         int currentFileIndex = 1;
-        int currentCount = 0;
         List<String> jsonFiles = new ArrayList<>();
 
         try (BufferedReader reader = new BufferedReader(
                 new FileReader("file.txt"), BUFFER_SIZE)) {
-            TreeSet<Long> sortedNumbers = new TreeSet<>();
+            ArrayList<Long> numberBuffer = new ArrayList<>(10_000_000);
 
             String line;
             while ((line = reader.readLine()) != null) {
                 if (!line.trim().isEmpty()) {
-                    sortedNumbers.add(Long.parseLong(line.trim()));
-                    currentCount++;
+                    numberBuffer.add(Long.parseLong(line.trim()));
 
-                    if (currentCount >= 10_000_000) {
-                        String jsonFile = writeToJsonFile(sortedNumbers, currentFileIndex++);
+                    if (numberBuffer.size() >= 10_000_000) {
+                        Collections.sort(numberBuffer);
+                        String jsonFile = writeToJsonFile(numberBuffer, currentFileIndex++);
                         jsonFiles.add(jsonFile); // JSONファイル名を記録
-                        sortedNumbers.clear();
-                        currentCount = 0;
+                        numberBuffer.clear();
+
                     }
                 }
             }
 
-            if (!sortedNumbers.isEmpty()) {
-                String jsonFile = writeToJsonFile(sortedNumbers, currentFileIndex);
+            if (!numberBuffer.isEmpty()) {
+                String jsonFile = writeToJsonFile(numberBuffer, currentFileIndex);
                 jsonFiles.add(jsonFile); // 最後のJSONファイル名も記録
             }
         }
@@ -76,29 +74,29 @@ public class App {
         int processors = Runtime.getRuntime().availableProcessors();
         int threadCount = Math.max(1, processors - 1);
         System.out.println("圧縮に使用するスレッド数: " + threadCount);
-        
+
         ExecutorService compressExecutor = Executors.newFixedThreadPool(threadCount);
-        
+
         try {
             // ファイルサイズを取得して、大きいファイルから処理するようにソート
             List<File> sortedFiles = jsonFiles.stream()
-                .map(File::new)
-                .sorted((f1, f2) -> Long.compare(f2.length(), f1.length()))
-                .collect(java.util.stream.Collectors.toList());
-                
+                    .map(File::new)
+                    .sorted((f1, f2) -> Long.compare(f2.length(), f1.length()))
+                    .collect(java.util.stream.Collectors.toList());
+
             // バッチサイズを設定（一度に処理するファイル数）
             int batchSize = Math.min(threadCount, sortedFiles.size());
-            
+
             // バッチごとに処理
             for (int i = 0; i < sortedFiles.size(); i += batchSize) {
                 int endIndex = Math.min(i + batchSize, sortedFiles.size());
                 List<File> batch = sortedFiles.subList(i, endIndex);
-                
-                System.out.println("バッチ処理開始: " + (i/batchSize + 1) + "/" + 
-                                  (int)Math.ceil((double)sortedFiles.size()/batchSize));
-                
+
+                System.out.println("バッチ処理開始: " + (i / batchSize + 1) + "/" +
+                        (int) Math.ceil((double) sortedFiles.size() / batchSize));
+
                 List<Future<?>> batchTasks = new ArrayList<>();
-                
+
                 // バッチ内のファイルを並行処理
                 for (File jsonFile : batch) {
                     // 各タスク開始前に少し遅延を入れてI/O競合を減らす
@@ -107,29 +105,29 @@ public class App {
                     } catch (InterruptedException e) {
                         Thread.currentThread().interrupt();
                     }
-                    
+
                     batchTasks.add(compressExecutor.submit(() -> {
                         try {
-                            System.out.println("圧縮開始: " + jsonFile.getName() + 
-                                              " (サイズ: " + jsonFile.length() / 1024 / 1024 + "MB)");
+                            System.out.println("圧縮開始: " + jsonFile.getName() +
+                                    " (サイズ: " + jsonFile.length() / 1024 / 1024 + "MB)");
                             long startTime = System.currentTimeMillis();
                             compressFile(jsonFile.getPath());
                             long endTime = System.currentTimeMillis();
-                            System.out.println("圧縮完了: " + jsonFile.getName() + 
-                                              " (処理時間: " + (endTime - startTime) / 1000 + "秒)");
+                            System.out.println("圧縮完了: " + jsonFile.getName() +
+                                    " (処理時間: " + (endTime - startTime) / 1000 + "秒)");
                         } catch (IOException e) {
                             throw new CompletionException(e);
                         }
                     }));
                 }
-                
+
                 // バッチ処理後に少し待機してI/Oを安定させる
                 try {
                     Thread.sleep(1000); // 1秒待機
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                 }
-                
+
                 // バッチ内のすべてのタスクが完了するのを待機
                 for (Future<?> task : batchTasks) {
                     try {
@@ -147,11 +145,11 @@ public class App {
                         throw new IOException("圧縮処理が中断されました", e);
                     }
                 }
-                
+
                 // バッチ処理後にガベージコレクションを明示的に実行
                 System.gc();
-                System.out.println("バッチ処理完了: " + (i/batchSize + 1) + "/" + 
-                                  (int)Math.ceil((double)sortedFiles.size()/batchSize));
+                System.out.println("バッチ処理完了: " + (i / batchSize + 1) + "/" +
+                        (int) Math.ceil((double) sortedFiles.size() / batchSize));
             }
         } finally {
             compressExecutor.shutdown();
@@ -167,7 +165,7 @@ public class App {
 
     }
 
-    private String writeToJsonFile(Set<Long> numbers, int fileIndex) throws IOException {
+    private String writeToJsonFile(ArrayList<Long> numberBuffer, int fileIndex) throws IOException {
         Path outputDir = Path.of("output");
         if (!Files.exists(outputDir)) {
             Files.createDirectory(outputDir);
@@ -183,7 +181,7 @@ public class App {
 
             // バッチ処理で1000件ずつ処理
             List<Long> batch = new ArrayList<>(1000);
-            Iterator<Long> iterator = numbers.iterator();
+            Iterator<Long> iterator = numberBuffer.iterator();
 
             while (iterator.hasNext()) {
                 batch.clear();
@@ -201,6 +199,9 @@ public class App {
 
             generator.writeEndArray();
             generator.writeEndObject();
+        } catch (IOException e) {
+            Files.deleteIfExists(Path.of(jsonFileName));
+            throw e;
         }
 
         System.out.println(jsonFileName + "の生成が完了しました。");
@@ -212,11 +213,12 @@ public class App {
 
         // LZMA2の圧縮設定を最適化
         LZMA2Options options = new LZMA2Options();
-        options.setPreset(4); // 圧縮レベルを4に下げてI/O負荷を軽減
-        options.setDictSize(8 * 1024 * 1024);
+        options.setPreset(6); // 圧縮レベルを4に下げてI/O負荷を軽減
+        options.setDictSize(16 * 1024 * 1024);
         options.setLc(3);
         options.setLp(0);
         options.setPb(2);
+        options.setMode(LZMA2Options.MODE_NORMAL);
 
         // ディスクI/Oを最適化するためのバッファリング
         try (InputStream input = new java.io.BufferedInputStream(new FileInputStream(jsonFileName), BUFFER_SIZE);

@@ -26,7 +26,7 @@ The `JAVA PROJECTS` view allows you to manage your dependencies. More details ca
 3. JSONファイルへの出力
    - テキストファイルから読み取った値をIDとし、IDに紐づくユニークな値を生成
 
-``` Java
+``` JSON
  {
   "items" : [ {
     "id" : 1,
@@ -65,7 +65,7 @@ java -jar target/java-test-1.0-SNAPSHOT.jar
 
 ## 動作
 
-```Text
+``` Plain Text
 ファイル生成を開始します...
 進捗状況: 5,000,000 / 100,000,000 (5.00%)
 進捗状況: 10,000,000 / 100,000,000 (10.00%)

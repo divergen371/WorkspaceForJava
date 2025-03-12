@@ -89,7 +89,7 @@ java -jar target/java-test-1.0-SNAPSHOT.jar
 進捗状況: 100,000,000 / 100,000,000 (100.00%)
 ファイル生成が完了しました。
 ファイルパス: ~/Java_Trae_Test/WorkspaceForJava/file.txt
-処理時間: 2.44秒
+処理時間: 2.52秒
 ファイルサイズ: 847.71 MB
 output/output_part1.jsonの生成が完了しました。
 output/output_part2.jsonの生成が完了しました。
@@ -111,33 +111,33 @@ output/output_part10.jsonの生成が完了しました。
 圧縮開始: output_part5.json (サイズ: 782MB)
 圧縮開始: output_part6.json (サイズ: 782MB)
 圧縮開始: output_part7.json (サイズ: 782MB)
-output/output_part10.json.xzの生成が完了しました。
-圧縮完了: output_part10.json (処理時間: 384秒)
-output/output_part4.json.xzの生成が完了しました。
-圧縮完了: output_part4.json (処理時間: 385秒)
-output/output_part7.json.xzの生成が完了しました。
-圧縮完了: output_part7.json (処理時間: 385秒)
-output/output_part6.json.xzの生成が完了しました。
-圧縮完了: output_part6.json (処理時間: 385秒)
 output/output_part3.json.xzの生成が完了しました。
-圧縮完了: output_part3.json (処理時間: 386秒)
+圧縮完了: output_part3.json (処理時間: 580秒)
+output/output_part10.json.xzの生成が完了しました。
+圧縮完了: output_part10.json (処理時間: 580秒)
 output/output_part2.json.xzの生成が完了しました。
-圧縮完了: output_part2.json (処理時間: 386秒)
+圧縮完了: output_part2.json (処理時間: 580秒)
+output/output_part7.json.xzの生成が完了しました。
+圧縮完了: output_part7.json (処理時間: 580秒)
+output/output_part4.json.xzの生成が完了しました。
+圧縮完了: output_part4.json (処理時間: 581秒)
 output/output_part5.json.xzの生成が完了しました。
-圧縮完了: output_part5.json (処理時間: 386秒)
+圧縮完了: output_part5.json (処理時間: 581秒)
+output/output_part6.json.xzの生成が完了しました。
+圧縮完了: output_part6.json (処理時間: 581秒)
 バッチ処理完了: 1/2
 バッチ処理開始: 2/2
 圧縮開始: output_part8.json (サイズ: 782MB)
 圧縮開始: output_part9.json (サイズ: 782MB)
 圧縮開始: output_part1.json (サイズ: 771MB)
 output/output_part9.json.xzの生成が完了しました。
-圧縮完了: output_part9.json (処理時間: 257秒)
+圧縮完了: output_part9.json (処理時間: 399秒)
 output/output_part8.json.xzの生成が完了しました。
-圧縮完了: output_part8.json (処理時間: 258秒)
+圧縮完了: output_part8.json (処理時間: 399秒)
 output/output_part1.json.xzの生成が完了しました。
-圧縮完了: output_part1.json (処理時間: 258秒)
+圧縮完了: output_part1.json (処理時間: 400秒)
 バッチ処理完了: 2/2
-総処理時間: 11分 29秒 325ミリ秒
+総処理時間: 16分 56秒 173ミリ秒
 ```
 
-＊各ファイルおおよそ200MBまで圧縮
+＊各ファイルおおよそ240MBまで圧縮

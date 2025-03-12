@@ -10,7 +10,7 @@ import java.util.Locale;
 public class FileGenerate {
     public static void genarateFile() {
         // 出力ファイルの設定
-        File outputFile = new File("numbers_1_to_100million.txt");
+        File outputFile = new File("file.txt");
 
         // カウンタと合計の定義
         final int TOTAL = 100_000_000;

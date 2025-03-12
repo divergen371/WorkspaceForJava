@@ -26,7 +26,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 public class App {
     private static final List<AutoCloseable> resources = new ArrayList<>();
-    private static final int BUFFER_SIZE = 1024 * 1024; // 1MB buffer
+    private static final int BUFFER_SIZE = 8 * 1024 * 1024; // 8MB buffer
     private static final ObjectMapper objectMapper = new ObjectMapper();
 
     static {
@@ -73,30 +73,90 @@ public class App {
 
         // 全JSONファイルの圧縮（並行処理）
         System.out.println("全JSONファイルの圧縮を開始します...");
-        ExecutorService compressExecutor = Executors.newFixedThreadPool(8);
-        List<Future<?>> compressionTasks = new ArrayList<>();
-
+        int processors = Runtime.getRuntime().availableProcessors();
+        int threadCount = Math.max(1, processors - 1);
+        System.out.println("圧縮に使用するスレッド数: " + threadCount);
+        
+        ExecutorService compressExecutor = Executors.newFixedThreadPool(threadCount);
+        
         try {
-            for (String jsonFile : jsonFiles) {
-                compressionTasks.add(compressExecutor.submit(() -> {
+            // ファイルサイズを取得して、大きいファイルから処理するようにソート
+            List<File> sortedFiles = jsonFiles.stream()
+                .map(File::new)
+                .sorted((f1, f2) -> Long.compare(f2.length(), f1.length()))
+                .collect(java.util.stream.Collectors.toList());
+                
+            // バッチサイズを設定（一度に処理するファイル数）
+            int batchSize = Math.min(threadCount, sortedFiles.size());
+            
+            // バッチごとに処理
+            for (int i = 0; i < sortedFiles.size(); i += batchSize) {
+                int endIndex = Math.min(i + batchSize, sortedFiles.size());
+                List<File> batch = sortedFiles.subList(i, endIndex);
+                
+                System.out.println("バッチ処理開始: " + (i/batchSize + 1) + "/" + 
+                                  (int)Math.ceil((double)sortedFiles.size()/batchSize));
+                
+                List<Future<?>> batchTasks = new ArrayList<>();
+                
+                // バッチ内のファイルを並行処理
+                for (File jsonFile : batch) {
+                    // 各タスク開始前に少し遅延を入れてI/O競合を減らす
                     try {
-                        compressFile(jsonFile);
-                    } catch (IOException e) {
-                        throw new CompletionException(e);
+                        Thread.sleep(100); // 100ミリ秒の遅延
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
                     }
-                }));
+                    
+                    batchTasks.add(compressExecutor.submit(() -> {
+                        try {
+                            System.out.println("圧縮開始: " + jsonFile.getName() + 
+                                              " (サイズ: " + jsonFile.length() / 1024 / 1024 + "MB)");
+                            long startTime = System.currentTimeMillis();
+                            compressFile(jsonFile.getPath());
+                            long endTime = System.currentTimeMillis();
+                            System.out.println("圧縮完了: " + jsonFile.getName() + 
+                                              " (処理時間: " + (endTime - startTime) / 1000 + "秒)");
+                        } catch (IOException e) {
+                            throw new CompletionException(e);
+                        }
+                    }));
+                }
+                
+                // バッチ処理後に少し待機してI/Oを安定させる
+                try {
+                    Thread.sleep(1000); // 1秒待機
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                
+                // バッチ内のすべてのタスクが完了するのを待機
+                for (Future<?> task : batchTasks) {
+                    try {
+                        task.get();
+                    } catch (ExecutionException e) {
+                        // 元の例外を取得して処理
+                        Throwable cause = e.getCause();
+                        if (cause instanceof IOException) {
+                            throw (IOException) cause;
+                        } else {
+                            throw new IOException("圧縮処理中にエラーが発生しました: " + cause.getMessage(), cause);
+                        }
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new IOException("圧縮処理が中断されました", e);
+                    }
+                }
+                
+                // バッチ処理後にガベージコレクションを明示的に実行
+                System.gc();
+                System.out.println("バッチ処理完了: " + (i/batchSize + 1) + "/" + 
+                                  (int)Math.ceil((double)sortedFiles.size()/batchSize));
             }
-
-            // 全ての圧縮タスクの完了を待機
-            for (Future<?> task : compressionTasks) {
-                task.get();
-            }
-        } catch (InterruptedException | ExecutionException e) {
-            throw new IOException("圧縮処理中にエラーが発生しました: " + e.getMessage(), e);
         } finally {
             compressExecutor.shutdown();
             try {
-                if (!compressExecutor.awaitTermination(1, TimeUnit.HOURS)) {
+                if (!compressExecutor.awaitTermination(60, TimeUnit.SECONDS)) {
                     compressExecutor.shutdownNow();
                 }
             } catch (InterruptedException e) {
@@ -104,7 +164,7 @@ public class App {
                 Thread.currentThread().interrupt();
             }
         }
-        System.out.println("圧縮処理が完了しました。");
+
     }
 
     private String writeToJsonFile(Set<Long> numbers, int fileIndex) throws IOException {
@@ -150,9 +210,18 @@ public class App {
     private void compressFile(String jsonFileName) throws IOException {
         String xzFileName = jsonFileName + ".xz";
 
-        try (InputStream input = new FileInputStream(jsonFileName);
-                OutputStream output = new FileOutputStream(xzFileName);
-                XZOutputStream xzOut = new XZOutputStream(output, new LZMA2Options())) {
+        // LZMA2の圧縮設定を最適化
+        LZMA2Options options = new LZMA2Options();
+        options.setPreset(4); // 圧縮レベルを4に下げてI/O負荷を軽減
+        options.setDictSize(8 * 1024 * 1024);
+        options.setLc(3);
+        options.setLp(0);
+        options.setPb(2);
+
+        // ディスクI/Oを最適化するためのバッファリング
+        try (InputStream input = new java.io.BufferedInputStream(new FileInputStream(jsonFileName), BUFFER_SIZE);
+                OutputStream output = new java.io.BufferedOutputStream(new FileOutputStream(xzFileName), BUFFER_SIZE);
+                XZOutputStream xzOut = new XZOutputStream(output, options)) {
 
             byte[] buffer = new byte[BUFFER_SIZE];
             int n;
@@ -164,7 +233,6 @@ public class App {
         // 元のJSONファイルを削除
         Files.delete(Path.of(jsonFileName));
         System.out.println(xzFileName + "の生成が完了しました。");
-        // 不要なreturn文を削除
     }
 
     private boolean isFileComplete() {

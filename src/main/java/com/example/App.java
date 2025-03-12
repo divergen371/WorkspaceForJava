@@ -3,6 +3,8 @@ package com.example;
 import java.io.BufferedReader;
 import java.io.FileReader;
 import java.io.IOException;
+import java.nio.MappedByteBuffer;
+import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -18,6 +20,7 @@ import org.tukaani.xz.LZMA2Options;
 import org.tukaani.xz.XZOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.RandomAccessFile;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 
@@ -165,6 +168,24 @@ public class App {
 
     }
 
+    private static class MappedByteBufferOutputStream extends OutputStream {
+        private final MappedByteBuffer buffer;
+
+        public MappedByteBufferOutputStream(MappedByteBuffer buffer) {
+            this.buffer = buffer;
+        }
+
+        @Override
+        public void write(int b) {
+            buffer.put((byte) b);
+        }
+
+        @Override
+        public void write(byte[] b, int off, int len) {
+            buffer.put(b, off, len);
+        }
+    }
+
     private String writeToJsonFile(ArrayList<Long> numberBuffer, int fileIndex) throws IOException {
         Path outputDir = Path.of("output");
         if (!Files.exists(outputDir)) {
@@ -173,32 +194,39 @@ public class App {
 
         String jsonFileName = String.format("output/output_part%d.json", fileIndex);
 
-        try (JsonGenerator generator = objectMapper.getFactory().createGenerator(
-                new File(jsonFileName), JsonEncoding.UTF8)) {
-            generator.useDefaultPrettyPrinter();
-            generator.writeStartObject();
-            generator.writeArrayFieldStart("items");
+        try (RandomAccessFile raf = new RandomAccessFile(jsonFileName, "rw"); FileChannel channel = raf.getChannel()) {
+            long estimatedSize = numberBuffer.size() * 120L + 10_000L;
+            MappedByteBuffer buffer = channel.map(FileChannel.MapMode.READ_WRITE, 0, estimatedSize);
 
-            // バッチ処理で1000件ずつ処理
-            List<Long> batch = new ArrayList<>(1000);
-            Iterator<Long> iterator = numberBuffer.iterator();
+            try (OutputStream outputStream = new MappedByteBufferOutputStream(buffer);
+                    JsonGenerator generator = objectMapper.getFactory().createGenerator(
+                            outputStream, JsonEncoding.UTF8)) {
+                generator.useDefaultPrettyPrinter();
+                generator.writeStartObject();
+                generator.writeArrayFieldStart("items");
 
-            while (iterator.hasNext()) {
-                batch.clear();
-                while (iterator.hasNext() && batch.size() < 1000) {
-                    batch.add(iterator.next());
+                // バッチ処理で1000件ずつ処理
+                List<Long> batch = new ArrayList<>(1000);
+                Iterator<Long> iterator = numberBuffer.iterator();
+
+                while (iterator.hasNext()) {
+                    batch.clear();
+                    while (iterator.hasNext() && batch.size() < 1000) {
+                        batch.add(iterator.next());
+                    }
+
+                    for (Long number : batch) {
+                        generator.writeStartObject();
+                        generator.writeNumberField("id", number);
+                        generator.writeStringField("secret", UUID.randomUUID().toString());
+                        generator.writeEndObject();
+                    }
                 }
 
-                for (Long number : batch) {
-                    generator.writeStartObject();
-                    generator.writeNumberField("id", number);
-                    generator.writeStringField("secret", UUID.randomUUID().toString());
-                    generator.writeEndObject();
-                }
+                generator.writeEndArray();
+                generator.writeEndObject();
             }
-
-            generator.writeEndArray();
-            generator.writeEndObject();
+            channel.truncate(buffer.position());
         } catch (IOException e) {
             Files.deleteIfExists(Path.of(jsonFileName));
             throw e;

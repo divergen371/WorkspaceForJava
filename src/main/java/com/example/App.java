@@ -30,6 +30,8 @@ public class App {
     private static final List<AutoCloseable> resources = new ArrayList<>();
     private static final int BUFFER_SIZE = 8 * 1024 * 1024; // 8MB buffer
     private static final ObjectMapper objectMapper = new ObjectMapper();
+    // 圧縮用のバッファ設定
+    private static final int COMPRESS_BUFFER_SIZE = 64 * 1024;
 
     static {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
@@ -241,19 +243,19 @@ public class App {
 
         // LZMA2の圧縮設定を最適化
         LZMA2Options options = new LZMA2Options();
-        options.setPreset(6); // 圧縮レベルを4に下げてI/O負荷を軽減
-        options.setDictSize(16 * 1024 * 1024);
+        options.setPreset(4); // 圧縮レベルを4に下げてI/O負荷を軽減
+        options.setDictSize(32 * 1024 * 1024);
         options.setLc(3);
         options.setLp(0);
         options.setPb(2);
-        options.setMode(LZMA2Options.MODE_NORMAL);
+        options.setMode(LZMA2Options.MODE_FAST);
 
         // ディスクI/Oを最適化するためのバッファリング
         try (InputStream input = new java.io.BufferedInputStream(new FileInputStream(jsonFileName), BUFFER_SIZE);
                 OutputStream output = new java.io.BufferedOutputStream(new FileOutputStream(xzFileName), BUFFER_SIZE);
                 XZOutputStream xzOut = new XZOutputStream(output, options)) {
 
-            byte[] buffer = new byte[BUFFER_SIZE];
+            byte[] buffer = new byte[COMPRESS_BUFFER_SIZE];
             int n;
             while ((n = input.read(buffer)) != -1) {
                 xzOut.write(buffer, 0, n);

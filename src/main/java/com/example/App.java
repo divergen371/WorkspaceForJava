@@ -180,73 +180,6 @@ public class App {
         }
     }
 
-    private void generateFile() {
-        if (isFileComplete()) {
-            System.out.println("ファイルは既に生成済みです。");
-            return;
-        }
-
-        // 既存のファイルを削除して新規作成
-        try {
-            Files.deleteIfExists(Path.of("file.txt"));
-        } catch (IOException e) {
-            System.err.println("既存ファイルの削除に失敗しました: " + e.getMessage());
-        }
-
-        ExecutorService executor = Executors.newFixedThreadPool(THREAD_COUNT);
-        List<Future<?>> futures = new ArrayList<>();
-
-        try {
-            // 順番に処理するために、チャンクを順番に生成
-            for (int chunk = 0; chunk < 100; chunk++) {
-                final int startNum = chunk * CHUNK_SIZE + 1;
-                futures.add(executor.submit(() -> writeChunk(startNum)));
-            }
-
-            for (Future<?> future : futures) {
-                future.get();
-            }
-        } catch (Exception e) {
-            System.err.println("ファイル生成中にエラーが発生しました: " + e.getMessage());
-        } finally {
-            executor.shutdown();
-            try {
-                executor.awaitTermination(1, TimeUnit.HOURS);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-        }
-        System.out.println("ファイル生成が完了しました！");
-    }
-
-    private void writeChunk(int startNum) {
-        String tempFile = String.format("temp_%d.txt", startNum);
-        try (BufferedWriter writer = new BufferedWriter(
-                new FileWriter(tempFile), BUFFER_SIZE)) {
-            for (int i = 0; i < CHUNK_SIZE; i++) {
-                writer.write(String.valueOf(startNum + i));
-                writer.newLine();
-            }
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
-
-        // ここで一時ファイルをメインファイルに追記する
-        // 同期化して順番に書き込みを保証する
-        synchronized (App.class) {
-            try {
-                Files.write(
-                        Path.of("file.txt"),
-                        Files.readAllBytes(Path.of(tempFile)),
-                        StandardOpenOption.CREATE,
-                        StandardOpenOption.APPEND);
-                Files.delete(Path.of(tempFile));
-            } catch (IOException e) {
-                throw new RuntimeException(e);
-            }
-        }
-    }
-
     public static void main(String[] args) throws Exception {
         App app = new App();
 
@@ -254,7 +187,7 @@ public class App {
         long startTime = System.currentTimeMillis();
 
         if (!app.isFileComplete()) {
-            app.generateFile();
+            FileGenerate.genarateFile();
         }
         app.processFile();
 

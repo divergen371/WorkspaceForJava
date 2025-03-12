@@ -8,7 +8,7 @@ import java.text.NumberFormat;
 import java.util.Locale;
 
 public class FileGenerate {
-    public static void main(String[] args) {
+    public static void genarateFile() {
         // 出力ファイルの設定
         File outputFile = new File("numbers_1_to_100million.txt");
 

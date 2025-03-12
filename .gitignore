@@ -50,3 +50,5 @@ buildNumber.properties
 
 *.txt
 output/
+bin/*
+bin/main/java/com/example/App.class

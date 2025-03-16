@@ -8,6 +8,14 @@ import java.text.NumberFormat;
 import java.util.Locale;
 
 public class FileGenerate {
+    /**
+     * 100,000,000行のテキストファイルを生成します。
+     *
+     * <p>このメソッドは、{@link File}を1行ずつ書き込み、 {@link BufferedWriter}を使用してバッファリングを行い、一定の間隔でバッファをフラッシュします。
+     * また、一定の間隔で進捗状況を報告します。
+     *
+     * <p>このメソッドは、{@link App#main(String[])}メソッドで呼び出されます。
+     */
     public static void generateFile() {
         // 出力ファイルの設定
         File outputFile = new File("file.txt");

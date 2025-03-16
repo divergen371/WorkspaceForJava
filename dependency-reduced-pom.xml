@@ -35,6 +35,18 @@
           </execution>
         </executions>
       </plugin>
+      <plugin>
+        <artifactId>maven-javadoc-plugin</artifactId>
+        <version>3.6.3</version>
+        <configuration>
+          <author>true</author>
+          <source>1.7</source>
+          <show>protected</show>
+          <encoding>UTF-8</encoding>
+          <charset>UTF-8</charset>
+          <docencoding>UTF-8</docencoding>
+        </configuration>
+      </plugin>
     </plugins>
   </build>
   <properties>

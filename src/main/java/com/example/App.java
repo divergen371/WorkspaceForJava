@@ -1,48 +1,60 @@
 package com.example;
 
-import java.io.BufferedReader;
-import java.io.FileReader;
-import java.io.IOException;
+import com.fasterxml.jackson.core.JsonEncoding;
+import com.fasterxml.jackson.core.JsonGenerator;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.tukaani.xz.LZMA2Options;
+import org.tukaani.xz.XZOutputStream;
+
+import java.io.*;
 import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
+import java.util.*;
 import java.util.concurrent.*;
-import java.io.File;
-import java.util.UUID;
-import com.fasterxml.jackson.core.JsonGenerator;
-import com.fasterxml.jackson.core.JsonEncoding;
-import java.util.Iterator;
-import org.tukaani.xz.LZMA2Options;
-import org.tukaani.xz.XZOutputStream;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.io.RandomAccessFile;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
-
-import com.fasterxml.jackson.databind.ObjectMapper;
 
 public class App {
-    private static final List<AutoCloseable> resources = new ArrayList<>();
-    private static final int BUFFER_SIZE = 8 * 1024 * 1024; // 8MB buffer
-    private static final ObjectMapper objectMapper = new ObjectMapper();
+    private static final List<AutoCloseable> resources            = new ArrayList<>();
+    private static final int                 BUFFER_SIZE          = 8 * 1024 * 1024; // 8MB buffer
+    private static final ObjectMapper        objectMapper         = new ObjectMapper();
     // 圧縮用のバッファ設定
-    private static final int COMPRESS_BUFFER_SIZE = 64 * 1024;
+    private static final int                 COMPRESS_BUFFER_SIZE = 64 * 1024;
 
     static {
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            resources.forEach(resource -> {
-                try {
-                    resource.close();
-                } catch (Exception e) {
-                    System.err.println("Failed to close resource: " + e.getMessage());
-                }
-            });
-        }));
+        Runtime.getRuntime()
+               .addShutdownHook(new Thread(() -> resources.forEach(resource -> {
+                   try {
+                       resource.close();
+                   } catch (Exception e) {
+                       System.err.println("Failed to close resource: " + e.getMessage());
+                   }
+               })));
+    }
+
+    public static void main(String[] args) throws Exception {
+        App app = new App();
+
+        // 開始時刻を記録
+        long startTime = System.currentTimeMillis();
+
+        if (! app.isFileComplete()) {
+            FileGenerate.generateFile();
+        }
+        app.processFile();
+
+        // 終了時刻を記録し、処理時間を計算
+        long endTime = System.currentTimeMillis();
+        long totalTime = endTime - startTime;
+
+        // 処理時間を分、秒、ミリ秒に変換
+        long minutes = totalTime / (1000 * 60);
+        long seconds = (totalTime % (1000 * 60)) / 1000;
+        long milliseconds = totalTime % 1000;
+
+        System.out.printf(
+                "総処理時間: %d分 %d秒 %dミリ秒%n",
+                minutes, seconds, milliseconds);
     }
 
     public void processFile() throws IOException {
@@ -50,17 +62,20 @@ public class App {
         List<String> jsonFiles = new ArrayList<>();
 
         try (BufferedReader reader = new BufferedReader(
-                new FileReader("file.txt"), BUFFER_SIZE)) {
+                new FileReader("file.txt"), BUFFER_SIZE)
+        ) {
             ArrayList<Long> numberBuffer = new ArrayList<>(10_000_000);
 
             String line;
             while ((line = reader.readLine()) != null) {
-                if (!line.trim().isEmpty()) {
+                if (! line.trim().isEmpty()) {
                     numberBuffer.add(Long.parseLong(line.trim()));
 
                     if (numberBuffer.size() >= 10_000_000) {
                         Collections.sort(numberBuffer);
-                        String jsonFile = writeToJsonFile(numberBuffer, currentFileIndex++);
+                        String jsonFile = writeToJsonFile(
+                                numberBuffer,
+                                currentFileIndex++);
                         jsonFiles.add(jsonFile); // JSONファイル名を記録
                         numberBuffer.clear();
 
@@ -68,8 +83,10 @@ public class App {
                 }
             }
 
-            if (!numberBuffer.isEmpty()) {
-                String jsonFile = writeToJsonFile(numberBuffer, currentFileIndex);
+            if (! numberBuffer.isEmpty()) {
+                String jsonFile = writeToJsonFile(
+                        numberBuffer,
+                        currentFileIndex);
                 jsonFiles.add(jsonFile); // 最後のJSONファイル名も記録
             }
         }
@@ -77,17 +94,20 @@ public class App {
         // 全JSONファイルの圧縮（並行処理）
         System.out.println("全JSONファイルの圧縮を開始します...");
         int processors = Runtime.getRuntime().availableProcessors();
-        int threadCount = Math.max(1, processors - 1);
+        int threadCount = Math.max(1, processors - 3);
         System.out.println("圧縮に使用するスレッド数: " + threadCount);
 
-        ExecutorService compressExecutor = Executors.newFixedThreadPool(threadCount);
+        ExecutorService compressExecutor = Executors.newFixedThreadPool(
+                threadCount);
 
         try {
             // ファイルサイズを取得して、大きいファイルから処理するようにソート
             List<File> sortedFiles = jsonFiles.stream()
-                    .map(File::new)
-                    .sorted((f1, f2) -> Long.compare(f2.length(), f1.length()))
-                    .collect(java.util.stream.Collectors.toList());
+                                              .map(File::new)
+                                              .sorted((f1, f2) -> Long.compare(
+                                                      f2.length(),
+                                                      f1.length()))
+                                              .collect(java.util.stream.Collectors.toList());
 
             // バッチサイズを設定（一度に処理するファイル数）
             int batchSize = Math.min(threadCount, sortedFiles.size());
@@ -98,7 +118,7 @@ public class App {
                 List<File> batch = sortedFiles.subList(i, endIndex);
 
                 System.out.println("バッチ処理開始: " + (i / batchSize + 1) + "/" +
-                        (int) Math.ceil((double) sortedFiles.size() / batchSize));
+                                   (int) Math.ceil((double) sortedFiles.size() / batchSize));
 
                 List<Future<?>> batchTasks = new ArrayList<>();
 
@@ -114,12 +134,12 @@ public class App {
                     batchTasks.add(compressExecutor.submit(() -> {
                         try {
                             System.out.println("圧縮開始: " + jsonFile.getName() +
-                                    " (サイズ: " + jsonFile.length() / 1024 / 1024 + "MB)");
+                                               " (サイズ: " + jsonFile.length() / 1024 / 1024 + "MB)");
                             long startTime = System.currentTimeMillis();
                             compressFile(jsonFile.getPath());
                             long endTime = System.currentTimeMillis();
                             System.out.println("圧縮完了: " + jsonFile.getName() +
-                                    " (処理時間: " + (endTime - startTime) / 1000 + "秒)");
+                                               " (処理時間: " + (endTime - startTime) / 1000 + "秒)");
                         } catch (IOException e) {
                             throw new CompletionException(e);
                         }
@@ -143,7 +163,9 @@ public class App {
                         if (cause instanceof IOException) {
                             throw (IOException) cause;
                         } else {
-                            throw new IOException("圧縮処理中にエラーが発生しました: " + cause.getMessage(), cause);
+                            throw new IOException(
+                                    "圧縮処理中にエラーが発生しました: " + cause.getMessage(),
+                                    cause);
                         }
                     } catch (InterruptedException e) {
                         Thread.currentThread().interrupt();
@@ -154,12 +176,12 @@ public class App {
                 // バッチ処理後にガベージコレクションを明示的に実行
                 System.gc();
                 System.out.println("バッチ処理完了: " + (i / batchSize + 1) + "/" +
-                        (int) Math.ceil((double) sortedFiles.size() / batchSize));
+                                   (int) Math.ceil((double) sortedFiles.size() / batchSize));
             }
         } finally {
             compressExecutor.shutdown();
             try {
-                if (!compressExecutor.awaitTermination(60, TimeUnit.SECONDS)) {
+                if (! compressExecutor.awaitTermination(60, TimeUnit.SECONDS)) {
                     compressExecutor.shutdownNow();
                 }
             } catch (InterruptedException e) {
@@ -170,39 +192,34 @@ public class App {
 
     }
 
-    private static class MappedByteBufferOutputStream extends OutputStream {
-        private final MappedByteBuffer buffer;
-
-        public MappedByteBufferOutputStream(MappedByteBuffer buffer) {
-            this.buffer = buffer;
-        }
-
-        @Override
-        public void write(int b) {
-            buffer.put((byte) b);
-        }
-
-        @Override
-        public void write(byte[] b, int off, int len) {
-            buffer.put(b, off, len);
-        }
-    }
-
-    private String writeToJsonFile(ArrayList<Long> numberBuffer, int fileIndex) throws IOException {
+    private String writeToJsonFile(ArrayList<Long> numberBuffer, int fileIndex)
+            throws IOException {
         Path outputDir = Path.of("output");
-        if (!Files.exists(outputDir)) {
+        if (! Files.exists(outputDir)) {
             Files.createDirectory(outputDir);
         }
 
-        String jsonFileName = String.format("output/output_part%d.json", fileIndex);
+        String jsonFileName = String.format(
+                "output/output_part%d.json",
+                fileIndex);
 
-        try (RandomAccessFile raf = new RandomAccessFile(jsonFileName, "rw"); FileChannel channel = raf.getChannel()) {
+        try (RandomAccessFile raf = new RandomAccessFile(
+                jsonFileName,
+                "rw"); FileChannel channel = raf.getChannel()
+        ) {
             long estimatedSize = numberBuffer.size() * 120L + 10_000L;
-            MappedByteBuffer buffer = channel.map(FileChannel.MapMode.READ_WRITE, 0, estimatedSize);
+            MappedByteBuffer buffer = channel.map(
+                    FileChannel.MapMode.READ_WRITE,
+                    0,
+                    estimatedSize);
 
-            try (OutputStream outputStream = new MappedByteBufferOutputStream(buffer);
-                    JsonGenerator generator = objectMapper.getFactory().createGenerator(
-                            outputStream, JsonEncoding.UTF8)) {
+            try (OutputStream outputStream = new MappedByteBufferOutputStream(
+                    buffer);
+                    JsonGenerator generator = objectMapper.getFactory()
+                                                          .createGenerator(
+                                                                  outputStream,
+                                                                  JsonEncoding.UTF8)
+            ) {
                 generator.useDefaultPrettyPrinter();
                 generator.writeStartObject();
                 generator.writeArrayFieldStart("items");
@@ -220,7 +237,10 @@ public class App {
                     for (Long number : batch) {
                         generator.writeStartObject();
                         generator.writeNumberField("id", number);
-                        generator.writeStringField("secret", UUID.randomUUID().toString());
+                        generator.writeStringField(
+                                "secret",
+                                UUID.randomUUID()
+                                    .toString());
                         generator.writeEndObject();
                     }
                 }
@@ -251,13 +271,16 @@ public class App {
         options.setMode(LZMA2Options.MODE_FAST);
 
         // ディスクI/Oを最適化するためのバッファリング
-        try (InputStream input = new java.io.BufferedInputStream(new FileInputStream(jsonFileName), BUFFER_SIZE);
-                OutputStream output = new java.io.BufferedOutputStream(new FileOutputStream(xzFileName), BUFFER_SIZE);
-                XZOutputStream xzOut = new XZOutputStream(output, options)) {
+        try (InputStream input = new java.io.BufferedInputStream(
+                new FileInputStream(jsonFileName), BUFFER_SIZE);
+                OutputStream output = new java.io.BufferedOutputStream(
+                        new FileOutputStream(xzFileName), BUFFER_SIZE);
+                XZOutputStream xzOut = new XZOutputStream(output, options)
+        ) {
 
             byte[] buffer = new byte[COMPRESS_BUFFER_SIZE];
             int n;
-            while ((n = input.read(buffer)) != -1) {
+            while ((n = input.read(buffer)) != - 1) {
                 xzOut.write(buffer, 0, n);
             }
         }
@@ -275,27 +298,22 @@ public class App {
         }
     }
 
-    public static void main(String[] args) throws Exception {
-        App app = new App();
 
-        // 開始時刻を記録
-        long startTime = System.currentTimeMillis();
+    private static class MappedByteBufferOutputStream extends OutputStream {
+        private final MappedByteBuffer buffer;
 
-        if (!app.isFileComplete()) {
-            FileGenerate.generateFile();
+        public MappedByteBufferOutputStream(MappedByteBuffer buffer) {
+            this.buffer = buffer;
         }
-        app.processFile();
 
-        // 終了時刻を記録し、処理時間を計算
-        long endTime = System.currentTimeMillis();
-        long totalTime = endTime - startTime;
+        @Override
+        public void write(int b) {
+            buffer.put((byte) b);
+        }
 
-        // 処理時間を分、秒、ミリ秒に変換
-        long minutes = totalTime / (1000 * 60);
-        long seconds = (totalTime % (1000 * 60)) / 1000;
-        long milliseconds = totalTime % 1000;
-
-        System.out.printf("総処理時間: %d分 %d秒 %dミリ秒%n",
-                minutes, seconds, milliseconds);
+        @Override
+        public void write(byte[] b, int off, int len) {
+            buffer.put(b, off, len);
+        }
     }
 }

@@ -13,6 +13,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.stream.Stream;
 
 public class App {
     private static final List<AutoCloseable> resources            = new ArrayList<>();
@@ -32,6 +33,12 @@ public class App {
                })));
     }
 
+    /**
+     * mainメソッド
+     *
+     * @param args コマンドライン引数
+     * @throws Exception 例外
+     */
     public static void main(String[] args) throws Exception {
         App app = new App();
 
@@ -57,6 +64,16 @@ public class App {
                 minutes, seconds, milliseconds);
     }
 
+    /**
+     * ファイルをJSONファイルに分割し、各ファイルを圧縮する
+     *
+     * <p>このメソッドは、{@link FileGenerate#generateFile()}によって生成されたファイルを
+     * JSONファイルに分割し、各ファイルを圧縮します。
+     *
+     * <p>このメソッドは、{@link #main(String[])}メソッドで呼び出されます。
+     *
+     * @throws IOException 入出力例外
+     */
     public void processFile() throws IOException {
         int currentFileIndex = 1;
         List<String> jsonFiles = new ArrayList<>();
@@ -97,101 +114,117 @@ public class App {
         int threadCount = Math.max(1, processors - 3);
         System.out.println("圧縮に使用するスレッド数: " + threadCount);
 
-        ExecutorService compressExecutor = Executors.newFixedThreadPool(
-                threadCount);
+        try (ExecutorService compressExecutor = Executors.newFixedThreadPool(
+                threadCount)
+        ) {
 
-        try {
-            // ファイルサイズを取得して、大きいファイルから処理するようにソート
-            List<File> sortedFiles = jsonFiles.stream()
-                                              .map(File::new)
-                                              .sorted((f1, f2) -> Long.compare(
-                                                      f2.length(),
-                                                      f1.length()))
-                                              .collect(java.util.stream.Collectors.toList());
+            try {
+                // ファイルサイズを取得して、大きいファイルから処理するようにソート
+                List<File> sortedFiles = jsonFiles.stream()
+                                                  .map(File::new)
+                                                  .sorted((f1, f2) -> Long.compare(
+                                                          f2.length(),
+                                                          f1.length()))
+                                                  .collect(java.util.stream.Collectors.toList());
 
-            // バッチサイズを設定（一度に処理するファイル数）
-            int batchSize = Math.min(threadCount, sortedFiles.size());
+                // バッチサイズを設定（一度に処理するファイル数）
+                int batchSize = Math.min(threadCount, sortedFiles.size());
 
-            // バッチごとに処理
-            for (int i = 0; i < sortedFiles.size(); i += batchSize) {
-                int endIndex = Math.min(i + batchSize, sortedFiles.size());
-                List<File> batch = sortedFiles.subList(i, endIndex);
+                // バッチごとに処理
+                for (int i = 0; i < sortedFiles.size(); i += batchSize) {
+                    int endIndex = Math.min(i + batchSize, sortedFiles.size());
+                    List<File> batch = sortedFiles.subList(i, endIndex);
 
-                System.out.println("バッチ処理開始: " + (i / batchSize + 1) + "/" +
-                                   (int) Math.ceil((double) sortedFiles.size() / batchSize));
+                    System.out.println("バッチ処理開始: " + (i / batchSize + 1) + "/" +
+                                       (int) Math.ceil((double) sortedFiles.size() / batchSize));
 
-                List<Future<?>> batchTasks = new ArrayList<>();
+                    List<Future<?>> batchTasks = new ArrayList<>();
 
-                // バッチ内のファイルを並行処理
-                for (File jsonFile : batch) {
-                    // 各タスク開始前に少し遅延を入れてI/O競合を減らす
+                    // バッチ内のファイルを並行処理
+                    for (File jsonFile : batch) {
+                        // 各タスク開始前に少し遅延を入れてI/O競合を減らす
+                        try {
+                            Thread.sleep(100); // 100ミリ秒の遅延
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        }
+
+                        batchTasks.add(compressExecutor.submit(() -> {
+                            try {
+                                System.out.println("圧縮開始: " + jsonFile.getName() +
+                                                   " (サイズ: " + jsonFile.length() / 1024 / 1024 + "MB)");
+                                long startTime = System.currentTimeMillis();
+                                compressFile(jsonFile.getPath());
+                                long endTime = System.currentTimeMillis();
+                                System.out.println("圧縮完了: " + jsonFile.getName() +
+                                                   " (処理時間: " + (endTime - startTime) / 1000 + "秒)");
+                            } catch (IOException e) {
+                                throw new CompletionException(e);
+                            }
+                        }));
+                    }
+
+                    // バッチ処理後に少し待機してI/Oを安定させる
                     try {
-                        Thread.sleep(100); // 100ミリ秒の遅延
+                        Thread.sleep(1000); // 1秒待機
                     } catch (InterruptedException e) {
                         Thread.currentThread().interrupt();
                     }
 
-                    batchTasks.add(compressExecutor.submit(() -> {
+                    // バッチ内のすべてのタスクが完了するのを待機
+                    for (Future<?> task : batchTasks) {
                         try {
-                            System.out.println("圧縮開始: " + jsonFile.getName() +
-                                               " (サイズ: " + jsonFile.length() / 1024 / 1024 + "MB)");
-                            long startTime = System.currentTimeMillis();
-                            compressFile(jsonFile.getPath());
-                            long endTime = System.currentTimeMillis();
-                            System.out.println("圧縮完了: " + jsonFile.getName() +
-                                               " (処理時間: " + (endTime - startTime) / 1000 + "秒)");
-                        } catch (IOException e) {
-                            throw new CompletionException(e);
+                            task.get();
+                        } catch (ExecutionException e) {
+                            // 元の例外を取得して処理
+                            Throwable cause = e.getCause();
+                            if (cause instanceof IOException) {
+                                throw (IOException) cause;
+                            } else {
+                                throw new IOException(
+                                        "圧縮処理中にエラーが発生しました: " + cause.getMessage(),
+                                        cause);
+                            }
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            throw new IOException(
+                                    "圧縮処理が中断されました",
+                                    e);
                         }
-                    }));
-                }
+                    }
 
-                // バッチ処理後に少し待機してI/Oを安定させる
+                    // バッチ処理後にガベージコレクションを明示的に実行
+                    System.gc();
+                    System.out.println("バッチ処理完了: " + (i / batchSize + 1) + "/" +
+                                       (int) Math.ceil((double) sortedFiles.size() / batchSize));
+                }
+            } finally {
+                compressExecutor.shutdown();
                 try {
-                    Thread.sleep(1000); // 1秒待機
+                    if (! compressExecutor.awaitTermination(
+                            60,
+                            TimeUnit.SECONDS)) {
+                        compressExecutor.shutdownNow();
+                    }
                 } catch (InterruptedException e) {
+                    compressExecutor.shutdownNow();
                     Thread.currentThread().interrupt();
                 }
-
-                // バッチ内のすべてのタスクが完了するのを待機
-                for (Future<?> task : batchTasks) {
-                    try {
-                        task.get();
-                    } catch (ExecutionException e) {
-                        // 元の例外を取得して処理
-                        Throwable cause = e.getCause();
-                        if (cause instanceof IOException) {
-                            throw (IOException) cause;
-                        } else {
-                            throw new IOException(
-                                    "圧縮処理中にエラーが発生しました: " + cause.getMessage(),
-                                    cause);
-                        }
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        throw new IOException("圧縮処理が中断されました", e);
-                    }
-                }
-
-                // バッチ処理後にガベージコレクションを明示的に実行
-                System.gc();
-                System.out.println("バッチ処理完了: " + (i / batchSize + 1) + "/" +
-                                   (int) Math.ceil((double) sortedFiles.size() / batchSize));
-            }
-        } finally {
-            compressExecutor.shutdown();
-            try {
-                if (! compressExecutor.awaitTermination(60, TimeUnit.SECONDS)) {
-                    compressExecutor.shutdownNow();
-                }
-            } catch (InterruptedException e) {
-                compressExecutor.shutdownNow();
-                Thread.currentThread().interrupt();
             }
         }
 
     }
 
+    /**
+     * 並列処理でJSONファイルを生成
+     *
+     * <p>このメソッドは、{@link #processFile()}メソッドで呼び出されます。
+     *
+     * @param numberBuffer 並列処理の対象となる数値データのバッファー
+     * @param fileIndex    生成するJSONファイル名に使用するインデックス
+     * @return 生成されたJSONファイル名
+     * @throws IOException 入出力例外
+     */
     private String writeToJsonFile(ArrayList<Long> numberBuffer, int fileIndex)
             throws IOException {
         Path outputDir = Path.of("output");
@@ -258,6 +291,14 @@ public class App {
         return jsonFileName;
     }
 
+    /**
+     * 並列処理でJSONファイルをXZ圧縮
+     *
+     * <p>このメソッドは、{@link #processFile()}メソッドで呼び出されます。
+     *
+     * @param jsonFileName XZ圧縮するJSONファイル名
+     * @throws IOException 入出力例外
+     */
     private void compressFile(String jsonFileName) throws IOException {
         String xzFileName = jsonFileName + ".xz";
 
@@ -290,9 +331,18 @@ public class App {
         System.out.println(xzFileName + "の生成が完了しました。");
     }
 
+    /**
+     * {@code file.txt}が完全に生成されているかどうかを確認します。
+     *
+     * <p>このメソッドは、{@link #main(String[])}メソッドで呼び出されます。
+     *
+     * @return {@code file.txt}が完全に生成されている場合は{@code true}を返し、そうでない場合は{@code false}を返します。
+     */
     private boolean isFileComplete() {
-        try {
-            return Files.lines(Path.of("file.txt")).count() == 100_000_000;
+        // file.txtが存在すれば、行数をカウント
+        // 存在しなければfalseを返す
+        try (Stream<String> lines = Files.lines(Path.of("file.txt"))) {
+            return lines.count() == 10_000_000;
         } catch (IOException e) {
             return false;
         }
@@ -306,11 +356,24 @@ public class App {
             this.buffer = buffer;
         }
 
+
+        /**
+         * {@inheritDoc}
+         *
+         * <p>この実装は、指定された1バイトをバッファに書き込みます。
+         *
+         * @param b 1バイトの値
+         */
         @Override
         public void write(int b) {
             buffer.put((byte) b);
         }
 
+        /**
+         * {@inheritDoc}
+         *
+         * <p>この実装はバッファに指定された範囲のバイトを書き込みます。
+         */
         @Override
         public void write(byte[] b, int off, int len) {
             buffer.put(b, off, len);

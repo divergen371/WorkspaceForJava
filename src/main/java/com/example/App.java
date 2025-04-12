@@ -13,6 +13,7 @@ import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.stream.Collectors;
@@ -22,8 +23,12 @@ public class App {
     private static final List<AutoCloseable> resources            = new ArrayList<>();
     private static final int                 BUFFER_SIZE          = 8 * 1024 * 1024; // 8MB buffer
     private static final ObjectMapper        objectMapper         = new ObjectMapper();
-    // 圧縮用のバッファ設定
+    // 圧縮用のバッファ設定 - ディスクのブロックサイズに合わせて最適化（通常4KBの倍数）
     private static final int                 COMPRESS_BUFFER_SIZE = 64 * 1024;
+    // 最適なバッファサイズ（ディスクのブロックサイズに合わせる）
+    private static final int                 OPTIMAL_BUFFER_SIZE  = 4 * 1024 * 16; // 64KB
+    // I/O操作を制限するためのセマフォ
+    private final Semaphore                  ioSemaphore          = new Semaphore(3); // 同時に実行するI/O操作を3つに制限
 
     static {
         Runtime.getRuntime()
@@ -143,8 +148,15 @@ public class App {
         int threadCount = Math.max(1, processors - 3);
         System.out.println("圧縮に使用するスレッド数: " + threadCount);
 
+        // I/O処理用のスレッドファクトリを作成（優先度を下げる）
+        ThreadFactory threadFactory = r -> {
+            Thread t = new Thread(r);
+            t.setPriority(Thread.MIN_PRIORITY); // I/O処理の優先度を下げる
+            return t;
+        };
+
         try (ExecutorService compressExecutor = Executors.newFixedThreadPool(
-                threadCount)
+                threadCount, threadFactory)
         ) {
 
             try {
@@ -171,12 +183,8 @@ public class App {
 
                     // バッチ内のファイルを並行処理
                     for (File jsonFile : batch) {
-                        // 各タスク開始前に少し遅延を入れてI/O競合を減らす
-                        try {
-                            Thread.sleep(100); // 100ミリ秒の遅延
-                        } catch (InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                        }
+                        // Thread.sleepの代わりにセマフォを使用してI/O競合を制御
+                        // 各タスクは圧縮処理内でセマフォを取得する
 
                         batchTasks.add(compressExecutor.submit(() -> {
                             try {
@@ -193,12 +201,9 @@ public class App {
                         }));
                     }
 
-                    // バッチ処理後に少し待機してI/Oを安定させる
-                    try {
-                        Thread.sleep(1000); // 1秒待機
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                    }
+                    // バッチ処理後にガベージコレクションを促進するためのヒント
+                    // Thread.sleepの代わりにメモリ管理を改善
+                    System.gc(); // 明示的なGCのリクエスト
 
                     // バッチ内のすべてのタスクが完了するのを待機
                     for (Future<?> task : batchTasks) {
@@ -261,9 +266,13 @@ public class App {
             Files.createDirectory(outputDir);
         }
 
-        String jsonFileName = String.format(
-                "output/output_part%d.json",
+        // 基本のファイル名を生成
+        String baseFileName = String.format(
+                "output_part%d.json",
                 fileIndex);
+
+        // ファイルパスを分散させてI/O競合を軽減
+        String jsonFileName = getDistributedPath(baseFileName);
 
         try (RandomAccessFile raf = new RandomAccessFile(
                 jsonFileName,
@@ -365,53 +374,66 @@ public class App {
         File jsonFile = new File(jsonFileName);
         long fileSize = jsonFile.length();
 
-        // LZMA2の圧縮設定を最適化
-        LZMA2Options options = new LZMA2Options();
-        options.setPreset(4); // 圧縮レベルを4に下げてI/O負荷を軽減
-        options.setDictSize(32 * 1024 * 1024);
-        options.setLc(3);
-        options.setLp(0);
-        options.setPb(2);
-        options.setMode(LZMA2Options.MODE_FAST);
-
-        // ファイルサイズに基づいてバッファサイズを調整
-        int optimalBufferSize = calculateOptimalBufferSize(fileSize);
-        System.out.println("圧縮用バッファサイズ: " + (optimalBufferSize / 1024) + "KB");
-
-        // ディスクI/Oを最適化するためのバッファリング
-        try (InputStream input = new java.io.BufferedInputStream(
-                new FileInputStream(jsonFileName), optimalBufferSize);
-                OutputStream output = new java.io.BufferedOutputStream(
-                        new FileOutputStream(xzFileName), optimalBufferSize);
-                XZOutputStream xzOut = new XZOutputStream(output, options)
-        ) {
-            // DirectByteBufferを使用してオフヒープメモリを活用
-            ByteBuffer directBuffer = ByteBuffer.allocateDirect(COMPRESS_BUFFER_SIZE);
-            byte[] buffer = new byte[COMPRESS_BUFFER_SIZE];
-            int n;
-            long totalBytesRead = 0;
-
-            while ((n = input.read(buffer)) != -1) {
-                // DirectByteBufferにデータをコピー
-                directBuffer.clear();
-                directBuffer.put(buffer, 0, n);
-                directBuffer.flip();
-
-                // バッファからデータを読み取って圧縮
-                xzOut.write(buffer, 0, n);
-
-                // 進捗状況を更新
-                totalBytesRead += n;
-                if (totalBytesRead % (10 * 1024 * 1024) == 0 || totalBytesRead == fileSize) { // 10MBごとに報告
-                    System.out.printf("圧縮進捗: %.1f%% (%d/%d バイト)%n",
-                        (double)totalBytesRead/fileSize*100, totalBytesRead, fileSize);
-                }
-            }
+        // I/O操作のセマフォを取得
+        try {
+            ioSemaphore.acquire();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("圧縮処理が中断されました", e);
         }
 
-        // 元のJSONファイルを削除
-        Files.delete(Path.of(jsonFileName));
-        System.out.println(xzFileName + "の生成が完了しました。");
+        try {
+            // LZMA2の圧縮設定を最適化
+            LZMA2Options options = new LZMA2Options();
+            options.setPreset(4); // 圧縮レベルを4に下げてI/O負荷を軽減
+            options.setDictSize(32 * 1024 * 1024);
+            options.setLc(3);
+            options.setLp(0);
+            options.setPb(2);
+            options.setMode(LZMA2Options.MODE_FAST);
+
+            // ファイルサイズに基づいてバッファサイズを調整
+            int optimalBufferSize = calculateOptimalBufferSize(fileSize);
+            System.out.println("圧縮用バッファサイズ: " + (optimalBufferSize / 1024) + "KB");
+
+            // ディスクI/Oを最適化するためのバッファリング
+            try (InputStream input = new java.io.BufferedInputStream(
+                    new FileInputStream(jsonFileName), optimalBufferSize);
+                    OutputStream output = new java.io.BufferedOutputStream(
+                            new FileOutputStream(xzFileName), optimalBufferSize);
+                    XZOutputStream xzOut = new XZOutputStream(output, options)
+            ) {
+                // DirectByteBufferを使用してオフヒープメモリを活用
+                ByteBuffer directBuffer = ByteBuffer.allocateDirect(COMPRESS_BUFFER_SIZE);
+                byte[] buffer = new byte[COMPRESS_BUFFER_SIZE];
+                int n;
+                long totalBytesRead = 0;
+
+                while ((n = input.read(buffer)) != -1) {
+                    // DirectByteBufferにデータをコピー
+                    directBuffer.clear();
+                    directBuffer.put(buffer, 0, n);
+                    directBuffer.flip();
+
+                    // バッファからデータを読み取って圧縮
+                    xzOut.write(buffer, 0, n);
+
+                    // 進捗状況を更新
+                    totalBytesRead += n;
+                    if (totalBytesRead % (10 * 1024 * 1024) == 0 || totalBytesRead == fileSize) { // 10MBごとに報告
+                        System.out.printf("圧縮進捗: %.1f%% (%d/%d バイト)%n",
+                            (double)totalBytesRead/fileSize*100, totalBytesRead, fileSize);
+                    }
+                }
+            }
+
+            // 元のJSONファイルを削除
+            Files.delete(Path.of(jsonFileName));
+            System.out.println(xzFileName + "の生成が完了しました。");
+        } finally {
+            // 必ずI/O操作のセマフォを解放
+            ioSemaphore.release();
+        }
     }
 
     /**
@@ -421,13 +443,14 @@ public class App {
      * @return 最適なバッファサイズ（バイト）
      */
     private int calculateOptimalBufferSize(long fileSize) {
-        // 小さなファイル: 512KB、中サイズファイル: 2MB、大きなファイル: 8MB
+        // ディスクのブロックサイズに合わせて最適化（通常4KBの倍数）
+        // 小さなファイル: 64KB、中サイズファイル: 256KB、大きなファイル: 1MB
         if (fileSize < 10 * 1024 * 1024) { // 10MB未満
-            return 512 * 1024;
+            return OPTIMAL_BUFFER_SIZE; // 64KB
         } else if (fileSize < 100 * 1024 * 1024) { // 100MB未満
-            return 2 * 1024 * 1024;
+            return OPTIMAL_BUFFER_SIZE * 4; // 256KB
         } else {
-            return BUFFER_SIZE; // 8MB
+            return OPTIMAL_BUFFER_SIZE * 16; // 1MB
         }
     }
 
@@ -446,6 +469,71 @@ public class App {
         } catch (IOException e) {
             return false;
         }
+    }
+
+    /**
+     * ファイルパスにハッシュを適用して異なるディレクトリに分散
+     * これによりI/O競合を軽減する
+     *
+     * @param fileName 元のファイル名
+     * @return 分散後のパス
+     * @throws IOException ディレクトリ作成時の例外
+     */
+    private String getDistributedPath(String fileName) throws IOException {
+        int hash = fileName.hashCode() & 0xf; // 0-15の値を取得
+        String dir = "output/partition_" + hash;
+        Files.createDirectories(Path.of(dir));
+        return dir + "/" + new File(fileName).getName();
+    }
+
+    /**
+     * 非同期I/Oを使用してファイルを読み込むメソッド
+     * Java NIOの非同期チャネルを使用
+     *
+     * @param filePath 読み込むファイルのパス
+     * @return 読み込み結果を返すFuture
+     * @throws IOException 入出力例外
+     */
+    private CompletableFuture<ByteBuffer> readFileAsync(String filePath) throws IOException {
+        CompletableFuture<ByteBuffer> future = new CompletableFuture<>();
+
+        // 非同期ファイルチャネルを開く
+        java.nio.channels.AsynchronousFileChannel fileChannel =
+            java.nio.channels.AsynchronousFileChannel.open(
+                Path.of(filePath), StandardOpenOption.READ);
+
+        // ファイルサイズを取得
+        long fileSize = Files.size(Path.of(filePath));
+        ByteBuffer buffer = ByteBuffer.allocate((int) Math.min(fileSize, OPTIMAL_BUFFER_SIZE * 4));
+
+        // 非同期読み込みを開始
+        fileChannel.read(buffer, 0, buffer, new java.nio.channels.CompletionHandler<Integer, ByteBuffer>() {
+            @Override
+            public void completed(Integer result, ByteBuffer attachment) {
+                try {
+                    // 読み込み完了後の処理
+                    attachment.flip();
+                    future.complete(attachment);
+                    fileChannel.close();
+                } catch (IOException e) {
+                    future.completeExceptionally(e);
+                }
+            }
+
+            @Override
+            public void failed(Throwable exc, ByteBuffer attachment) {
+                try {
+                    future.completeExceptionally(exc);
+                    fileChannel.close();
+                } catch (IOException e) {
+                    // クローズ時の例外も追加
+                    exc.addSuppressed(e);
+                    future.completeExceptionally(exc);
+                }
+            }
+        });
+
+        return future;
     }
 
 

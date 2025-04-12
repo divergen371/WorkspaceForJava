@@ -7,17 +7,21 @@ import org.tukaani.xz.LZMA2Options;
 import org.tukaani.xz.XZOutputStream;
 
 import java.io.*;
+import java.nio.BufferOverflowException;
+import java.nio.ByteBuffer;
 import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 public class App {
     private static final List<AutoCloseable> resources            = new ArrayList<>();
     private static final int                 BUFFER_SIZE          = 8 * 1024 * 1024; // 8MB buffer
+    private static final long                MAX_MAPPING_SIZE     = 1024 * 1024 * 1024L; // 1GB maximum mapping size
     private static final ObjectMapper        objectMapper         = new ObjectMapper();
     // 圧縮用のバッファ設定
     private static final int                 COMPRESS_BUFFER_SIZE = 64 * 1024;
@@ -72,30 +76,34 @@ public class App {
      *
      * <p>このメソッドは、{@link #main(String[])}メソッドで呼び出されます。
      *
+     * <p>JVMオプション推奨設定:
+     * -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -Xmx4g
+     *
      * @throws IOException 入出力例外
      */
     public void processFile() throws IOException {
         int currentFileIndex = 1;
         List<String> jsonFiles = new ArrayList<>();
 
+        // 方法1: より小さなバッファサイズを使用
         try (BufferedReader reader = new BufferedReader(
                 new FileReader("file.txt"), BUFFER_SIZE)
         ) {
-            ArrayList<Long> numberBuffer = new ArrayList<>(10_000_000);
+            // バッファサイズを10分の1に削減
+            ArrayList<Long> numberBuffer = new ArrayList<>(1_000_000);
 
             String line;
             while ((line = reader.readLine()) != null) {
                 if (! line.trim().isEmpty()) {
                     numberBuffer.add(Long.parseLong(line.trim()));
 
-                    if (numberBuffer.size() >= 10_000_000) {
+                    if (numberBuffer.size() >= 1_000_000) { // バッファサイズに合わせて条件も変更
                         Collections.sort(numberBuffer);
                         String jsonFile = writeToJsonFile(
                                 numberBuffer,
                                 currentFileIndex++);
                         jsonFiles.add(jsonFile); // JSONファイル名を記録
                         numberBuffer.clear();
-
                     }
                 }
             }
@@ -107,6 +115,28 @@ public class App {
                 jsonFiles.add(jsonFile); // 最後のJSONファイル名も記録
             }
         }
+
+        // 方法2: ストリーム処理を使用する場合は以下のコードを使用
+        // 注意: 上記のBufferedReaderを使用する方法と同時に使用しないこと
+        /*
+        Path filePath = Path.of("file.txt");
+        // グループごとの最大サイズ
+        final int GROUP_SIZE = 1_000_000;
+
+        // ファイルをストリーム処理し、GROUP_SIZEごとにグループ化
+        Map<Integer, List<Long>> groups = Files.lines(filePath)
+            .filter(line -> !line.trim().isEmpty())
+            .map(Long::parseLong)
+            .collect(Collectors.groupingBy(n -> (int)(n / GROUP_SIZE)));
+
+        // 各グループを処理
+        for (Map.Entry<Integer, List<Long>> entry : groups.entrySet()) {
+            ArrayList<Long> numberBuffer = new ArrayList<>(entry.getValue());
+            Collections.sort(numberBuffer);
+            String jsonFile = writeToJsonFile(numberBuffer, currentFileIndex++);
+            jsonFiles.add(jsonFile);
+        }
+        */
 
         // 全JSONファイルの圧縮（並行処理）
         System.out.println("全JSONファイルの圧縮を開始します...");
@@ -240,11 +270,31 @@ public class App {
                 jsonFileName,
                 "rw"); FileChannel channel = raf.getChannel()
         ) {
-            long estimatedSize = numberBuffer.size() * 120L + 10_000L;
-            MappedByteBuffer buffer = channel.map(
-                    FileChannel.MapMode.READ_WRITE,
-                    0,
-                    estimatedSize);
+            // バッファオーバーフローを防ぐために、十分なサイズ見積もりに戻す
+            // UUIDなどのデータも考慮して大きめに見積もる
+            long estimatedSize = numberBuffer.size() * 150L + 50_000L;
+            System.out.println("ファイルサイズ見積もり: " + (estimatedSize / (1024 * 1024)) + "MB");
+
+            // 大きなファイルの場合はメモリマッピングを分割
+            final long MAX_MAPPING_SIZE = 1024 * 1024 * 1024L; // 1GB
+            MappedByteBuffer buffer;
+
+            if (estimatedSize > MAX_MAPPING_SIZE) {
+                // 大きなファイルの場合は最大マッピングサイズに制限
+                System.out.println("大きなファイルのため、メモリマッピングを" + MAX_MAPPING_SIZE / (1024*1024) + "MBに制限します");
+
+                // ファイルサイズが大きい場合は、通常のファイル出力に切り替える
+                System.out.println("メモリマッピングの代わりに通常のファイル出力を使用します");
+                return writeToJsonFileWithoutMapping(numberBuffer, fileIndex);
+            } else {
+                buffer = channel.map(
+                        FileChannel.MapMode.READ_WRITE,
+                        0,
+                        estimatedSize);
+            }
+
+            // オフヒープメモリを活用したバッファの使用
+            ByteBuffer directBuffer = ByteBuffer.allocateDirect(BUFFER_SIZE);
 
             try (OutputStream outputStream = new MappedByteBufferOutputStream(
                     buffer);
@@ -257,13 +307,18 @@ public class App {
                 generator.writeStartObject();
                 generator.writeArrayFieldStart("items");
 
-                // バッチ処理で1000件ずつ処理
-                List<Long> batch = new ArrayList<>(1000);
+                // バッチ処理で1000件ずつ処理 - メモリ効率を向上
+                final int WRITE_BATCH_SIZE = 1000;
+                List<Long> batch = new ArrayList<>(WRITE_BATCH_SIZE);
                 Iterator<Long> iterator = numberBuffer.iterator();
+
+                // 処理済みの数を追跡
+                long processedCount = 0;
+                long totalCount = numberBuffer.size();
 
                 while (iterator.hasNext()) {
                     batch.clear();
-                    while (iterator.hasNext() && batch.size() < 1000) {
+                    while (iterator.hasNext() && batch.size() < WRITE_BATCH_SIZE) {
                         batch.add(iterator.next());
                     }
 
@@ -275,6 +330,13 @@ public class App {
                                 UUID.randomUUID()
                                     .toString());
                         generator.writeEndObject();
+                    }
+
+                    // 進捗状況を更新
+                    processedCount += batch.size();
+                    if (processedCount % 100000 == 0 || processedCount == totalCount) {
+                        System.out.printf("JSONデータ生成進捗: %.1f%% (%d/%d)%n",
+                            (double)processedCount/totalCount*100, processedCount, totalCount);
                     }
                 }
 
@@ -301,6 +363,8 @@ public class App {
      */
     private void compressFile(String jsonFileName) throws IOException {
         String xzFileName = jsonFileName + ".xz";
+        File jsonFile = new File(jsonFileName);
+        long fileSize = jsonFile.length();
 
         // LZMA2の圧縮設定を最適化
         LZMA2Options options = new LZMA2Options();
@@ -311,24 +375,61 @@ public class App {
         options.setPb(2);
         options.setMode(LZMA2Options.MODE_FAST);
 
+        // ファイルサイズに基づいてバッファサイズを調整
+        int optimalBufferSize = calculateOptimalBufferSize(fileSize);
+        System.out.println("圧縮用バッファサイズ: " + (optimalBufferSize / 1024) + "KB");
+
         // ディスクI/Oを最適化するためのバッファリング
         try (InputStream input = new java.io.BufferedInputStream(
-                new FileInputStream(jsonFileName), BUFFER_SIZE);
+                new FileInputStream(jsonFileName), optimalBufferSize);
                 OutputStream output = new java.io.BufferedOutputStream(
-                        new FileOutputStream(xzFileName), BUFFER_SIZE);
+                        new FileOutputStream(xzFileName), optimalBufferSize);
                 XZOutputStream xzOut = new XZOutputStream(output, options)
         ) {
-
+            // DirectByteBufferを使用してオフヒープメモリを活用
+            ByteBuffer directBuffer = ByteBuffer.allocateDirect(COMPRESS_BUFFER_SIZE);
             byte[] buffer = new byte[COMPRESS_BUFFER_SIZE];
             int n;
-            while ((n = input.read(buffer)) != - 1) {
+            long totalBytesRead = 0;
+
+            while ((n = input.read(buffer)) != -1) {
+                // DirectByteBufferにデータをコピー
+                directBuffer.clear();
+                directBuffer.put(buffer, 0, n);
+                directBuffer.flip();
+
+                // バッファからデータを読み取って圧縮
                 xzOut.write(buffer, 0, n);
+
+                // 進捗状況を更新
+                totalBytesRead += n;
+                if (totalBytesRead % (10 * 1024 * 1024) == 0 || totalBytesRead == fileSize) { // 10MBごとに報告
+                    System.out.printf("圧縮進捗: %.1f%% (%d/%d バイト)%n",
+                        (double)totalBytesRead/fileSize*100, totalBytesRead, fileSize);
+                }
             }
         }
 
         // 元のJSONファイルを削除
         Files.delete(Path.of(jsonFileName));
         System.out.println(xzFileName + "の生成が完了しました。");
+    }
+
+    /**
+     * ファイルサイズに基づいて最適なバッファサイズを計算
+     *
+     * @param fileSize ファイルサイズ（バイト）
+     * @return 最適なバッファサイズ（バイト）
+     */
+    private int calculateOptimalBufferSize(long fileSize) {
+        // 小さなファイル: 512KB、中サイズファイル: 2MB、大きなファイル: 8MB
+        if (fileSize < 10 * 1024 * 1024) { // 10MB未満
+            return 512 * 1024;
+        } else if (fileSize < 100 * 1024 * 1024) { // 100MB未満
+            return 2 * 1024 * 1024;
+        } else {
+            return BUFFER_SIZE; // 8MB
+        }
     }
 
     /**
@@ -349,6 +450,79 @@ public class App {
     }
 
 
+    /**
+     * メモリマッピングを使用せずにJSONファイルを生成する代替メソッド
+     * 大きなファイルの場合に使用される
+     *
+     * @param numberBuffer 数値データのバッファー
+     * @param fileIndex 生成するJSONファイル名に使用するインデックス
+     * @return 生成されたJSONファイル名
+     * @throws IOException 入出力例外
+     */
+    private String writeToJsonFileWithoutMapping(ArrayList<Long> numberBuffer, int fileIndex)
+            throws IOException {
+        Path outputDir = Path.of("output");
+        if (! Files.exists(outputDir)) {
+            Files.createDirectory(outputDir);
+        }
+
+        String jsonFileName = String.format(
+                "output/output_part%d.json",
+                fileIndex);
+
+        try (BufferedOutputStream bos = new BufferedOutputStream(
+                new FileOutputStream(jsonFileName), BUFFER_SIZE);
+             JsonGenerator generator = objectMapper.getFactory()
+                     .createGenerator(bos, JsonEncoding.UTF8)
+        ) {
+            generator.useDefaultPrettyPrinter();
+            generator.writeStartObject();
+            generator.writeArrayFieldStart("items");
+
+            // バッチ処理で1000件ずつ処理 - メモリ効率を向上
+            final int WRITE_BATCH_SIZE = 1000;
+            List<Long> batch = new ArrayList<>(WRITE_BATCH_SIZE);
+            Iterator<Long> iterator = numberBuffer.iterator();
+
+            // 処理済みの数を追跡
+            long processedCount = 0;
+            long totalCount = numberBuffer.size();
+
+            while (iterator.hasNext()) {
+                batch.clear();
+                while (iterator.hasNext() && batch.size() < WRITE_BATCH_SIZE) {
+                    batch.add(iterator.next());
+                }
+
+                for (Long number : batch) {
+                    generator.writeStartObject();
+                    generator.writeNumberField("id", number);
+                    generator.writeStringField(
+                            "secret",
+                            UUID.randomUUID()
+                                .toString());
+                    generator.writeEndObject();
+                }
+
+                // 進捗状況を更新
+                processedCount += batch.size();
+                if (processedCount % 100000 == 0 || processedCount == totalCount) {
+                    System.out.printf("JSONデータ生成進捗: %.1f%% (%d/%d)%n",
+                        (double)processedCount/totalCount*100, processedCount, totalCount);
+                }
+            }
+
+            generator.writeEndArray();
+            generator.writeEndObject();
+        } catch (IOException e) {
+            Files.deleteIfExists(Path.of(jsonFileName));
+            throw e;
+        }
+
+        System.out.println(jsonFileName + "の生成が完了しました。");
+        return jsonFileName;
+    }
+
     private static class MappedByteBufferOutputStream extends OutputStream {
         private final MappedByteBuffer buffer;
 
@@ -366,7 +540,11 @@ public class App {
          */
         @Override
         public void write(int b) {
-            buffer.put((byte) b);
+            try {
+                buffer.put((byte) b);
+            } catch (BufferOverflowException e) {
+                throw new RuntimeException("バッファオーバーフロー: バッファサイズが不足しています", e);
+            }
         }
 
         /**
@@ -376,7 +554,11 @@ public class App {
          */
         @Override
         public void write(byte[] b, int off, int len) {
-            buffer.put(b, off, len);
+            try {
+                buffer.put(b, off, len);
+            } catch (BufferOverflowException e) {
+                throw new RuntimeException("バッファオーバーフロー: バッファサイズが不足しています", e);
+            }
         }
     }
 }

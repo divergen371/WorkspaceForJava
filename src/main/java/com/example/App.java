@@ -21,7 +21,6 @@ import java.util.stream.Stream;
 public class App {
     private static final List<AutoCloseable> resources            = new ArrayList<>();
     private static final int                 BUFFER_SIZE          = 8 * 1024 * 1024; // 8MB buffer
-    private static final long                MAX_MAPPING_SIZE     = 1024 * 1024 * 1024L; // 1GB maximum mapping size
     private static final ObjectMapper        objectMapper         = new ObjectMapper();
     // 圧縮用のバッファ設定
     private static final int                 COMPRESS_BUFFER_SIZE = 64 * 1024;
